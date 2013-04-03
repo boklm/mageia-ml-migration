@@ -1,0 +1,80 @@
+#!/usr/bin/perl -w
+
+# This script is used to migrate the list of subscribers on zarb mailing
+# lists to a list of subscribers on new mageia mailing lists with an
+# identity account.
+#
+# The script takes a list of emails in stdin, and output a list of
+# subscribers with an identity account in file 'subscribe', and a list
+# of subscribers without an identity account in file 'nosubscribe'.
+
+use strict;
+use Net::LDAP;
+use File::Slurp;
+use Data::Dump qw/dump/;
+
+my $ldapserver = 'ldap.mageia.org';
+my $binddn = 'uid=boklm,ou=People,dc=mageia,dc=org';
+my $bindpw = read_file('/etc/mga-ldap.secret');
+chomp $bindpw;
+
+sub getldap {
+    my $ldap = Net::LDAP->new($ldapserver) or die "$@";
+    my $m;
+    $m = $ldap->start_tls(verify => 'none');
+    die $m->error if $m->is_error;
+    $m = $ldap->bind($binddn, password => $bindpw);
+    die $m->error if $m->is_error;
+    return $ldap;
+}
+
+my $ldap = getldap();
+
+sub get_user_email {
+    my ($ldap, $user) = @_;
+    my $dn = "uid=$user,ou=People,dc=mageia,dc=org";
+    my $m = $ldap->search(
+        base   => $dn,
+        scope  => 'base',
+        filter => '(objectClass=inetOrgPerson)',
+    );
+    die $m->error if $m->is_error;
+    my $res = $m->as_struct;
+    if (exists $res->{$dn}) {
+        return $res->{$dn}->{mail}->[0];
+    }
+}
+
+sub find_email {
+    my ($ldap, $email) = @_;
+    my $dn = "ou=People,dc=mageia,dc=org";
+    my $m = $ldap->search(
+        base   => $dn,
+        filter => "(&(objectClass=inetOrgPerson)(mail=$email))",
+    );
+    die $m->error if $m->is_error;
+    my $res = $m->as_struct;
+    my $k = keys %$res;
+    return $k;
+}
+
+my @subscribe;
+my @nosubscribe;
+
+my $email;
+while ($email = <STDIN>) {
+    chomp $email;
+    if ($email =~ m/^(.+)\@mageia.org$/) {
+        push @subscribe, get_user_email($ldap, $1);
+        next;
+    }
+    if (find_email($ldap, $email)) {
+        push @subscribe, $email;
+    } else {
+        push @nosubscribe, $email;
+    }
+}
+
+write_file('subscribe', join("\n", @subscribe));
+write_file('nosubscribe', join("\n", @nosubscribe));
+
